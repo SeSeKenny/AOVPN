@@ -25,8 +25,13 @@ Code Descriptions:
     This code net means tunnel is up
 300 = Even after tunnel force down, connection did not come up, research yielded this is a RasMan service issue so service is restarted to force always on logic to reset and connect
     This code net means tunnel is up
+400 = Another net adapter is DomainAuthenticated in its NetConnectionProfile, not running logic
+    This code net means tunnel is left alone as is
 999 = All attempts to bring tunnel up have failed, no more logic left to run
     This code net means tunnel is down
+
+To Do:
+Could easily force tunnel down to hopefully have RasMan reevaluate trusted net configuration when DomainAuthenticated
 #>
 
 
@@ -59,6 +64,10 @@ $VpnConnection=Get-VpnConnection -AllUserConnection | Select-Object -First 1
 
 if (!$VpnConnection) {
     exit 100
+}
+
+if (Get-NetConnectionProfile -NetworkCategory DomainAuthenticated | Where-Object {$_.InterfaceAlias -ne $VpnConnection.Name}) {
+    exit 400
 }
 
 $TestServerAddress=(

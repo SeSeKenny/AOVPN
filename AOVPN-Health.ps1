@@ -82,11 +82,12 @@ if ($VpnConnection.ConnectionStatus -eq 'Connected') {
         exit 0
     }
     rasdial.exe "$($VpnConnection.Name)" /DISCONNECT
-    Start-Sleep -Seconds 10
+    Start-Sleep -Seconds 4
 }
 
 $LinkStatus=Test-TcpConnection -Port 53 -IpAddress $TestServerAddress
 if ($LinkStatus.TcpTestSucceeded -eq $true -and $LinkStatus.InterfaceAlias -eq $VpnConnection.Name) {
+    Start-Sleep -Seconds 15
     exit 200
 }
 
@@ -109,11 +110,11 @@ if ($CimService.ProcessId -ne 0) {
 }
 
 Start-Service $ServiceName
-Start-Sleep -Seconds 5
+Start-Sleep -Seconds 4
 
 $LinkStatus=Test-TcpConnection -Port 53 -IpAddress $TestServerAddress
 if ($LinkStatus.TcpTestSucceeded -eq $true -and $LinkStatus.InterfaceAlias -eq $VpnConnection.Name) {
+    Start-Sleep -Seconds 15
     exit 300
 }
 exit 999
-

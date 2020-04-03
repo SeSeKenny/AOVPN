@@ -19,7 +19,7 @@ Code Descriptions:
     This code net means tunnel is up
 100 = No AllUserConnection profile found
     This code net means tunnel is down
-(DISABLED CODE PATH) 110 = Unable to resolve dns of Vpn endpoint
+110 = Unable to resolve dns of Vpn endpoint
     This code net means tunnel is down
 200 = Post net connection change, tunnel needed to be forced down so auto up logic brings it up properly (when used with proper scheduled task event trigger)
     This code net means tunnel is up
@@ -36,19 +36,22 @@ Could easily force tunnel down to hopefully have RasMan reevaluate trusted net c
 
 
 function Test-TcpConnection ($IpAddress,$Port) {
-    $Socket=New-Object System.Net.Sockets.TcpClient
     $SocketState=$false
-    try {
-        $Result=$Socket.BeginConnect($IpAddress, $Port, $null, $null)
-        if (!$Result.AsyncWaitHandle.WaitOne(2000, $false)) {
-            throw [System.Exception]::new('Connection Timeout')
+    1..4 | Foreach-Object {
+        $Socket=New-Object System.Net.Sockets.TcpClient
+        if ($SocketState -eq $true) {continue}
+        try {
+            $Result=$Socket.BeginConnect($IpAddress, $Port, $null, $null)
+            if (!$Result.AsyncWaitHandle.WaitOne(500, $false)) {
+                throw [System.Exception]::new('Connection Timeout')
+            }
+            $Socket.EndConnect($Result) | Out-Null
+            if ($Socket.Connected -eq $true) {$SocketState=$true}
+        } `
+        catch {} `
+        finally {
+            $Socket.Close()
         }
-        $Socket.EndConnect($Result) | Out-Null
-        if ($Socket.Connected -eq $true) {$SocketState=$true}
-    } `
-    catch {} `
-    finally {
-        $Socket.Close()
     }
 
     $SocketRoute=Find-NetRoute -RemoteIPAddress $IpAddress
@@ -66,55 +69,67 @@ if (!$VpnConnection) {
     exit 100
 }
 
-if (Get-NetConnectionProfile -NetworkCategory DomainAuthenticated | Where-Object {$_.InterfaceAlias -ne $VpnConnection.Name}) {
-    exit 400
-}
-
 $TestServerAddress=(
     $VpnConnection.VpnConfigurationXml.VpnProfile.VpnConfiguration | `
         Select-Xml -XPath '//NrptRuleList' | `
             ForEach-Object {$_.Node}
 ).DnsServer[0]
 
-if ($VpnConnection.ConnectionStatus -eq 'Connected') {
+function Get-ConnectionUp {
     $LinkStatus=Test-TcpConnection -Port 53 -IpAddress $TestServerAddress
-    if ($LinkStatus.TcpTestSucceeded -eq $true -and $LinkStatus.InterfaceAlias -eq $VpnConnection.Name) {
-        exit 0
+    return $LinkStatus.TcpTestSucceeded -eq $true -and $LinkStatus.InterfaceAlias -eq $VpnConnection.Name
+}
+
+$ExitStateCode=0
+1..6 | ForEach-Object {
+    $ExecuteServiceKill=0
+    $ExecutedDisconnect=0
+    if (Get-NetConnectionProfile -NetworkCategory DomainAuthenticated | Where-Object {$_.InterfaceAlias -ne $VpnConnection.Name}) {
+        $ExitStateCode=400
+    } `
+    elseif (($VpnConnection | Get-VpnConnection).ConnectionStatus -eq 'Connected') {
+        if ((Get-ConnectionUp) -eq $false) {
+            rasdial.exe "$($VpnConnection.Name)" /DISCONNECT
+            $ExecutedDisconnect=1
+            if ((Get-ConnectionUp) -eq $true) {
+                $ExitStateCode=200
+            } `
+            else {
+                $ExecuteServiceKill=1
+            }
+        }
     }
-    rasdial.exe "$($VpnConnection.Name)" /DISCONNECT
-    Start-Sleep -Seconds 4
+
+    if ($ExecuteServiceKill -eq 1 -or ($VpnConnection | Get-VpnConnection).ConnectionStatus -ne 'Connected') {
+        try {
+            $ResolvedRecord=Resolve-DnsName $VpnConnection.ServerAddress -ErrorAction Stop
+        } `
+        catch {
+            $ExitStateCode=110
+        }
+
+        if ($ExitStateCode -ne 110) {
+            $ServiceName='RasMan'
+            $Service=Get-Service $ServiceName
+            if ($Service.ServiceType -ne 'Win32OwnProcess') {
+                sc.exe config $ServiceName type=own
+            }
+
+            $CimService=Get-CimInstance Win32_Service -Filter "Name = '$ServiceName'"
+            if ($CimService.ProcessId -ne 0) {
+                Stop-Process -Force -Id $CimService.ProcessId
+            }
+
+            Start-Service $ServiceName
+
+            if ((Get-ConnectionUp) -eq $true) {
+                $ExitStateCode=300
+            } `
+            else {
+                $ExitStateCode=999
+            }
+        }
+    }
+    Start-Sleep -Seconds 10
 }
-
-$LinkStatus=Test-TcpConnection -Port 53 -IpAddress $TestServerAddress
-if ($LinkStatus.TcpTestSucceeded -eq $true -and $LinkStatus.InterfaceAlias -eq $VpnConnection.Name) {
-    Start-Sleep -Seconds 15
-    exit 200
-}
-
-# try {
-#     Resolve-DnsName $VpnConnection.ServerAddress -ErrorAction Stop
-# } `
-# catch {
-#     exit 110
-# }
-
-$ServiceName='RasMan'
-$Service=Get-Service $ServiceName
-if ($Service.ServiceType -ne 'Win32OwnProcess') {
-    sc.exe config $ServiceName type=own
-}
-
-$CimService=Get-CimInstance Win32_Service -Filter "Name = '$ServiceName'"
-if ($CimService.ProcessId -ne 0) {
-    Stop-Process -Force -Id $CimService.ProcessId
-}
-
-Start-Service $ServiceName
-Start-Sleep -Seconds 4
-
-$LinkStatus=Test-TcpConnection -Port 53 -IpAddress $TestServerAddress
-if ($LinkStatus.TcpTestSucceeded -eq $true -and $LinkStatus.InterfaceAlias -eq $VpnConnection.Name) {
-    Start-Sleep -Seconds 15
-    exit 300
-}
-exit 999
+exit $ExitStateCode
